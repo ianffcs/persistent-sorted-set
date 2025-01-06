@@ -1,9 +1,10 @@
 (ns me.tonsky.persistent-sorted-set.test.core
   (:require
-    [me.tonsky.persistent-sorted-set :as set]
-    [clojure.test :as t :refer [is are deftest testing]])
-  #?(:clj
-      (:import [clojure.lang IReduce])))
+   [me.tonsky.persistent-sorted-set :as set]
+   [clojure.test :as t :refer [is are deftest testing]])
+  #?@(:cljd []
+      :clj
+      [(:import [clojure.lang IReduce])]))
 
 #?(:clj (set! *warn-on-reflection* true))
 
@@ -192,7 +193,7 @@
           nil    5001  
           
           nil    nil
- 
+          
           -1     5001
           0      5000  
           1      4999
@@ -249,14 +250,20 @@
           6000 -100  (irange 5000 0))))
     ))
 
-(defn ireduce
-  ([f coll] (#?(:clj .reduce :cljs -reduce) ^IReduce coll f))
-  ([f val coll] (#?(:clj .reduce :cljs -reduce) ^IReduce coll f val)))
+
+#?(:cljd
+   (defn ireduce
+     ([f coll] (-reduce coll f))
+     ([f val coll] (-reduce coll f val)))
+   :default
+   (defn ireduce
+     ([f coll] (#?(:clj .reduce :cljs -reduce) ^IReduce coll f))
+     ([f val coll] (#?(:clj .reduce :cljs -reduce) ^IReduce coll f val))))
 
 (defn reduce-chunked [f val coll]
   (if-some [s (seq coll)]
     (if (chunked-seq? s)
-      (recur f (#?(:clj .reduce :cljs -reduce) (chunk-first s) f val) (chunk-next s))
+      (recur f (#?(:clj .reduce :default -reduce) (chunk-first s) f val) (chunk-next s))
       (recur f (f val (first s)) (next s)))
     val))
 
@@ -309,18 +316,21 @@
         (is (= 35 (reduce-chunked + 0 (set/rslice s 8 2))))))))
 
 
-#?(:clj
-    (deftest iter-over-transient
-      (let [set (transient (into (set/sorted-set) (range 100)))
-            seq (seq set)]
-        (conj! set 100)
-        (is (thrown-with-msg? Exception #"iterating and mutating" (first seq)))
-        (is (thrown-with-msg? Exception #"iterating and mutating" (next seq)))
-        (is (thrown-with-msg? Exception #"iterating and mutating" (reduce + seq)))
-        (is (thrown-with-msg? Exception #"iterating and mutating" (reduce + 0 seq)))
-        (is (thrown-with-msg? Exception #"iterating and mutating" (chunk-first seq)))
-        (is (thrown-with-msg? Exception #"iterating and mutating" (chunk-next seq)))
-        (is (thrown-with-msg? Exception #"iterating and mutating" (.iterator ^Iterable seq))))))
+#?(:cljd
+   ;; TODO: do I need this in cljd?
+   ()
+   :clj
+   (deftest iter-over-transient
+     (let [set (transient (into (set/sorted-set) (range 100)))
+           seq (seq set)]
+       (conj! set 100)
+       (is (thrown-with-msg? Exception #"iterating and mutating" (first seq)))
+       (is (thrown-with-msg? Exception #"iterating and mutating" (next seq)))
+       (is (thrown-with-msg? Exception #"iterating and mutating" (reduce + seq)))
+       (is (thrown-with-msg? Exception #"iterating and mutating" (reduce + 0 seq)))
+       (is (thrown-with-msg? Exception #"iterating and mutating" (chunk-first seq)))
+       (is (thrown-with-msg? Exception #"iterating and mutating" (chunk-next seq)))
+       (is (thrown-with-msg? Exception #"iterating and mutating" (.iterator ^Iterable seq))))))
 
 (deftest seek-for-seq-test
   (let [size 1000
@@ -332,7 +342,6 @@
         (is (= seek-loc (first (set/seek set-seq seek-loc)))))
       (doseq [seek-loc (map #(* 100 %) (range 10))]
         (is (= seek-loc (first (set/seek set-rseq seek-loc))))))
-
     (testing "multiple seek testing"
       (is (= 500 (-> set-seq (set/seek 250) (set/seek 500) first)))
       (is (= 500 (-> set-rseq (set/seek 750) (set/seek 500) first))))
@@ -346,7 +355,6 @@
     #?(:clj
        (testing "nil behaviour"
          (is (thrown-with-msg? Exception #"seek can't be called with a nil key!" (set/seek set-seq nil)))))
-
     (testing "slicing together with seek"
       (is (= (range 5000 7501) (-> (set/slice (apply set/sorted-set (range 10000)) 2500 7500)
                                    (set/seek 5000))))
