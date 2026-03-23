@@ -19,6 +19,7 @@ EOF
 cd tmp/cljdtests
 clojure -M -m cljd.build init
 dart pub add -d test || true
-clojure -A:cljd-dev -M -m cljd.build compile me.tonsky.persistent-sorted-set.test.core
+clojure -A:cljd-dev -M -m cljd.build compile \
+  me.tonsky.persistent-sorted-set.test.core \
+  me.tonsky.persistent-sorted-set.test.async
 dart test -p vm
-

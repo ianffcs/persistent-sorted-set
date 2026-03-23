@@ -25,8 +25,10 @@
 
 #?(:cljd
    (defn into-array [aseq]
-     ;; TODO: addAll?
-     (reduce (fn [a x] (.add a x) a) (.empty #/(List dynamic) .growable true) aseq))
+     (let [arr (.empty #/(List dynamic) .growable true)]
+       (doseq [x aseq]
+         (.add arr x))
+       arr))
    :cljs
    (defn ^array into-array [aseq]
      (reduce (fn [a x] (.push a x) a) (js/Array.) aseq))
@@ -109,7 +111,7 @@
 
 
 (defn aconcat [a b]
-  #?(:cljd (let [combined (.from List a)]
+  #?(:cljd (let [combined (.from #/(List dynamic) a)]
              (.addAll combined b)
              combined)
      :cljs (.concat a b)
@@ -147,7 +149,7 @@
 
 
 (defn asort [arr cmp]
-  #?(:cljd (doto arr (.sort cmp))
+  #?(:cljd (doto arr (.sort (fn ^int [a b] (cmp a b))))
      :cljs (.sort arr cmp)
      :clj  (doto arr (Arrays/parallelSort cmp))))
 
