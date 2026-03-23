@@ -124,7 +124,7 @@
       (recur (cljd.core/conj res (mod path max-len)) (.floor (/ path max-len)))
       (vec res))))
 
-(defn- binary-search-l [cmp arr r k]
+(defn- binary-search-l [cmp ^List arr r k]
   (loop [l 0
          r (int r)]
     (if (<= l r)
@@ -135,7 +135,7 @@
           (recur l (dec m))))
       l)))
 
-(defn- binary-search-r [cmp arr r k]
+(defn- binary-search-r [cmp ^List arr r k]
   (loop [l 0
          r (int r)]
     (if (<= l r)
@@ -403,7 +403,7 @@
 
 (def ^:private uninitialized-hash nil)
 
-(deftype BTSet [root shift cnt comparator meta ^:mutable _hash]
+(deftype BTSet [root ^int shift ^int cnt comparator meta ^:mutable _hash]
   ;; TODO: ^:mixin c/ToStringMixin ? see entity in datascript
   ;; Object
   ;; (toString [this] (pr-str* this))
@@ -492,8 +492,8 @@
   ;;   (pr-sequential-writer writer pr-writer "#{" " " "}" opts (seq this)))
   )
 
-(defn- keys-for [^BTSet set path]
-  (loop [level (.-shift set)
+(defn- keys-for [^BTSet set ^int path]
+  (loop [level (int (.-shift set))
          node (.-root set)]
     (if (pos? level)
       (let [^Node node node]
@@ -503,7 +503,7 @@
       (let [^Leaf node node]
         (.-keys node)))))
 
-(defn- alter-btset [^BTSet set root shift cnt]
+(defn- alter-btset [^BTSet set root ^int shift ^int cnt]
   (BTSet. root shift cnt (.-comparator set) (.-meta set) uninitialized-hash))
 
 
@@ -671,7 +671,7 @@
 
 (declare -seek* -rseek*)
 
-(deftype Iter [^BTSet set left right keys idx]
+(deftype Iter [^BTSet set ^int left ^int right keys ^int idx]
   IIter
   (-copy [_ l r]
     (Iter. set l r (keys-for set l) (path-get l 0)))
@@ -730,9 +730,9 @@
           first))))
 
   (-reduce [this f start]
-    (loop [left left
+    (loop [left (int left)
            keys keys
-           idx idx
+           idx (int idx)
            acc start]
       (if (nil? keys)
         acc
@@ -786,12 +786,12 @@
   ;;   (pr-sequential-writer writer pr-writer "(" " " ")" opts (seq this)))
   )
 
-(defn iter [^BTSet set left right]
+(defn iter [^BTSet set ^int left ^int right]
   (Iter. set left right (keys-for set left) (path-get left 0)))
 
 ;; reverse iteration
 
-(deftype ReverseIter [^BTSet set left right keys idx]
+(deftype ReverseIter [^BTSet set ^int left ^int right keys ^int idx]
   IIter
   (-copy [_ l r]
     (ReverseIter. set l r (keys-for set r) (path-get r 0)))
@@ -859,7 +859,7 @@
   ;;   (pr-sequential-writer writer pr-writer "(" " " ")" opts (seq this)))
   )
 
-(defn riter [^BTSet set left right]
+(defn riter [^BTSet set ^int left ^int right]
   (ReverseIter. set left right (keys-for set right) (path-get right 0)))
 
 ;; distance
