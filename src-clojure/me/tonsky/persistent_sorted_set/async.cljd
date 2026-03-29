@@ -1,0 +1,424 @@
+(ns me.tonsky.persistent-sorted-set.async
+  (:require
+    [me.tonsky.persistent-sorted-set.arrays :as arrays]))
+
+(def max-len 32)
+(def min-len 16)
+
+(defn- binary-search-l [cmp arr r k]
+  (loop [l 0
+         r (int r)]
+    (if (<= l r)
+      (let [m (arrays/half (+ l r))
+            mk (arrays/aget arr m)]
+        (if (neg? (cmp mk k))
+          (recur (inc m) r)
+          (recur l (dec m))))
+      l)))
+
+(defn- lookup-exact [cmp arr key]
+  (let [arr-l (arrays/alength arr)
+        idx (binary-search-l cmp arr (dec arr-l) key)]
+    (if (and (< idx arr-l)
+             (== 0 (cmp (arrays/aget arr idx) key)))
+      idx
+      -1)))
+
+(defn- lookup-range [cmp arr key]
+  (let [arr-l (arrays/alength arr)
+        idx (binary-search-l cmp arr (dec arr-l) key)]
+    (if (== idx arr-l)
+      -1
+      idx)))
+
+(defn- cut-n-splice [arr cut-from cut-to splice-from splice-to xs]
+  (let [xs-l (arrays/alength xs)
+        l1 (- splice-from cut-from)
+        l2 (- cut-to splice-to)
+        l1xs (+ l1 xs-l)
+        new-arr (arrays/make-array (+ l1 xs-l l2))]
+    (arrays/acopy arr cut-from splice-from new-arr 0)
+    (arrays/acopy xs 0 xs-l new-arr l1)
+    (arrays/acopy arr splice-to cut-to new-arr l1xs)
+    new-arr))
+
+(defn- splice [arr splice-from splice-to xs]
+  (cut-n-splice arr 0 (arrays/alength arr) splice-from splice-to xs))
+
+(defn- merge-n-split [a1 a2]
+  (let [a1-l (arrays/alength a1)
+        a2-l (arrays/alength a2)
+        total-l (+ a1-l a2-l)
+        r1-l (arrays/half total-l)
+        r2-l (- total-l r1-l)
+        r1 (arrays/make-array r1-l)
+        r2 (arrays/make-array r2-l)]
+    (if (<= a1-l r1-l)
+      (do
+        (arrays/acopy a1 0 a1-l r1 0)
+        (arrays/acopy a2 0 (- r1-l a1-l) r1 a1-l)
+        (arrays/acopy a2 (- r1-l a1-l) a2-l r2 0))
+      (do
+        (arrays/acopy a1 0 r1-l r1 0)
+        (arrays/acopy a1 r1-l a1-l r2 0)
+        (arrays/acopy a2 0 a2-l r2 (- a1-l r1-l))))
+    (arrays/array r1 r2)))
+
+(defn- ^bool eq-arr [cmp a1 a1-from a1-to a2 a2-from a2-to]
+  (let [len (- a1-to a1-from)]
+    (and
+      (== len (- a2-to a2-from))
+      (loop [i 0]
+        (cond
+          (== i len)
+          true
+
+          (not (== 0 (cmp
+                       (arrays/aget a1 (+ i a1-from))
+                       (arrays/aget a2 (+ i a2-from)))))
+          false
+
+          :else
+          (recur (inc i)))))))
+
+(defn- check-n-splice [cmp arr from to new-arr]
+  (if (eq-arr cmp arr from to new-arr 0 (arrays/alength new-arr))
+    arr
+    (splice arr from to new-arr)))
+
+(defn- return-array
+  "Drop non-nil references and return array of arguments."
+  ([a1]
+   (arrays/array a1))
+  ([a1 a2]
+   (if a1
+     (if a2
+       (arrays/array a1 a2)
+       (arrays/array a1))
+     (arrays/array a2)))
+  ([a1 a2 a3]
+   (if a1
+     (if a2
+       (if a3
+         (arrays/array a1 a2 a3)
+         (arrays/array a1 a2))
+       (if a3
+         (arrays/array a1 a3)
+         (arrays/array a1)))
+     (if a2
+       (if a3
+         (arrays/array a2 a3)
+         (arrays/array a2))
+       (arrays/array a3)))))
+
+(defprotocol IStorage
+  (restore-node [_ address]))
+
+(defprotocol IAsyncNode
+  (async-node-materialize [_])
+  (node-lim-key [_])
+  (node-len [_])
+  (async-node-merge [_ next])
+  (async-node-merge-n-split [_ next])
+  (async-node-lookup [_ cmp key])
+  (async-node-conj [_ cmp key])
+  (async-node-disj [_ cmp key root? left right])
+  (async-node-slice-into [_ cmp key-from key-to acc]))
+
+(defn- ^:async materialize [node]
+  (when node
+    (await (async-node-materialize node))))
+
+(declare ->async-node ->async-leaf)
+
+(defn- ^:async rotate [node root? left right]
+  (let [node (await (materialize node))]
+    (cond
+      root?
+      (return-array node)
+
+      (> (node-len node) min-len)
+      (return-array left node right)
+
+      :else
+      (let [left (when left (await (materialize left)))
+            right (when right (await (materialize right)))]
+        (cond
+          (and left (<= (node-len left) min-len))
+          (return-array (async-node-merge left node) right)
+
+          (and right (<= (node-len right) min-len))
+          (return-array left (async-node-merge node right))
+
+          (and left (or (nil? right)
+                        (< (node-len left) (node-len right))))
+          (let [nodes (async-node-merge-n-split left node)]
+            (return-array (arrays/aget nodes 0) (arrays/aget nodes 1) right))
+
+          :else
+          (let [nodes (async-node-merge-n-split node right)]
+            (return-array left (arrays/aget nodes 0) (arrays/aget nodes 1))))))))
+
+(deftype AsyncNode [^#/(List dynamic) keys ^#/(List dynamic) pointers]
+  IAsyncNode
+  (async-node-materialize [this]
+    this)
+
+  (node-lim-key [_]
+    (arrays/alast keys))
+
+  (node-len [_]
+    (arrays/alength keys))
+
+  (async-node-merge [_ ^AsyncNode next]
+    (AsyncNode. (arrays/aconcat keys (.-keys next))
+                (arrays/aconcat pointers (.-pointers next))))
+
+  (async-node-merge-n-split [_ ^AsyncNode next]
+    (let [ks (merge-n-split keys (.-keys next))
+          ps (merge-n-split pointers (.-pointers next))]
+      (return-array (AsyncNode. (arrays/aget ks 0) (arrays/aget ps 0))
+                    (AsyncNode. (arrays/aget ks 1) (arrays/aget ps 1)))))
+
+  (async-node-lookup [_ cmp key]
+    (let [idx (lookup-range cmp keys key)]
+      (when-not (== -1 idx)
+        (await (async-node-lookup (arrays/aget pointers idx) cmp key)))))
+
+  (async-node-conj [_ cmp key]
+    (let [idx (binary-search-l cmp keys (- (arrays/alength keys) 2) key)
+          nodes (await (async-node-conj (arrays/aget pointers idx) cmp key))]
+      (when nodes
+        (let [new-keys (check-n-splice cmp keys idx (inc idx) (arrays/amap node-lim-key nodes))
+              new-pointers (splice pointers idx (inc idx) nodes)]
+          (if (<= (arrays/alength new-pointers) max-len)
+            (arrays/array (AsyncNode. new-keys new-pointers))
+            (let [new-keys ^#/(List dynamic) new-keys
+                  new-pointers ^#/(List dynamic) new-pointers
+                  middle (arrays/half (arrays/alength new-pointers))]
+              (arrays/array
+                (AsyncNode. (.sublist new-keys 0 middle)
+                            (.sublist new-pointers 0 middle))
+                (AsyncNode. (.sublist new-keys middle)
+                            (.sublist new-pointers middle)))))))))
+
+  (async-node-disj [_ cmp key root? left right]
+    (let [idx (lookup-range cmp keys key)]
+      (when-not (== -1 idx)
+        (let [child (arrays/aget pointers idx)
+              left-child (when (>= (dec idx) 0)
+                           (arrays/aget pointers (dec idx)))
+              right-child (when (< (inc idx) (arrays/alength pointers))
+                            (arrays/aget pointers (inc idx)))
+              disjned (await (async-node-disj child cmp key false left-child right-child))]
+          (when disjned
+            (let [left-idx (if left-child (dec idx) idx)
+                  right-idx (if right-child (+ 2 idx) (+ 1 idx))
+                  new-keys (check-n-splice cmp keys left-idx right-idx (arrays/amap node-lim-key disjned))
+                  new-pointers (splice pointers left-idx right-idx disjned)]
+              (await (rotate (AsyncNode. new-keys new-pointers) root? left right))))))))
+
+  (async-node-slice-into [_ cmp key-from key-to acc]
+    (let [pointers-l (arrays/alength pointers)]
+      (loop [i 0
+             acc acc]
+        (if (>= i pointers-l)
+          acc
+          (let [max-key (arrays/aget keys i)]
+            (if (and key-from (neg? (cmp max-key key-from)))
+              (recur (inc i) acc)
+              (let [acc (await (async-node-slice-into (arrays/aget pointers i) cmp key-from key-to acc))]
+                (if (and key-to (pos? (cmp max-key key-to)))
+                  acc
+                  (recur (inc i) acc))))))))))
+
+(deftype AsyncLeaf [^#/(List dynamic) keys]
+  IAsyncNode
+  (async-node-materialize [this]
+    this)
+
+  (node-lim-key [_]
+    (arrays/alast keys))
+
+  (node-len [_]
+    (arrays/alength keys))
+
+  (async-node-merge [_ ^AsyncLeaf next]
+    (AsyncLeaf. (arrays/aconcat keys (.-keys next))))
+
+  (async-node-merge-n-split [_ ^AsyncLeaf next]
+    (let [ks (merge-n-split keys (.-keys next))]
+      (return-array (AsyncLeaf. (arrays/aget ks 0))
+                    (AsyncLeaf. (arrays/aget ks 1)))))
+
+  (async-node-lookup [_ cmp key]
+    (let [idx (lookup-exact cmp keys key)]
+      (when-not (== -1 idx)
+        (arrays/aget keys idx))))
+
+  (async-node-conj [_ cmp key]
+    (let [idx (binary-search-l cmp keys (dec (arrays/alength keys)) key)
+          keys-l (arrays/alength keys)]
+      (cond
+        (and (< idx keys-l)
+             (== 0 (cmp key (arrays/aget keys idx))))
+        nil
+
+        (== keys-l max-len)
+        (let [middle (arrays/half (inc keys-l))]
+          (if (> idx middle)
+            (arrays/array
+              (AsyncLeaf. (.sublist keys 0 middle))
+              (AsyncLeaf. (cut-n-splice keys middle keys-l idx idx (arrays/array key))))
+            (arrays/array
+              (AsyncLeaf. (cut-n-splice keys 0 middle idx idx (arrays/array key)))
+              (AsyncLeaf. (.sublist keys middle keys-l)))))
+
+        :else
+        (arrays/array (AsyncLeaf. (splice keys idx idx (arrays/array key)))))))
+
+  (async-node-disj [_ cmp key root? left right]
+    (let [idx (lookup-exact cmp keys key)]
+      (when-not (== -1 idx)
+        (let [new-keys (splice keys idx (inc idx) (arrays/array))]
+          (await (rotate (AsyncLeaf. new-keys) root? left right))))))
+
+  (async-node-slice-into [_ cmp key-from key-to acc]
+    (let [keys-l (arrays/alength keys)]
+      (loop [i 0
+             acc acc]
+        (if (>= i keys-l)
+          acc
+          (let [k (arrays/aget keys i)]
+            (cond
+              (and key-from (neg? (cmp k key-from)))
+              (recur (inc i) acc)
+
+              (and key-to (pos? (cmp k key-to)))
+              acc
+
+              :else
+              (recur (inc i) (conj! acc k)))))))))
+
+(deftype AsyncLazyNode [storage address lim-key len ^:mutable cached]
+  IAsyncNode
+  (async-node-materialize [this]
+    (if cached
+      cached
+      (let [loaded (await (restore-node storage address))]
+        (when-not (satisfies? IAsyncNode loaded)
+          (throw (ex-info "IStorage::restore-node must return an IAsyncNode."
+                          {:address address
+                           :value loaded})))
+        (set! cached loaded)
+        loaded)))
+
+  (node-lim-key [_]
+    lim-key)
+
+  (node-len [_]
+    len)
+
+  (async-node-merge [this next]
+    (let [node (await (async-node-materialize this))]
+      (async-node-merge node next)))
+
+  (async-node-merge-n-split [this next]
+    (let [node (await (async-node-materialize this))]
+      (async-node-merge-n-split node next)))
+
+  (async-node-lookup [this cmp key]
+    (let [node (await (async-node-materialize this))]
+      (await (async-node-lookup node cmp key))))
+
+  (async-node-conj [this cmp key]
+    (let [node (await (async-node-materialize this))]
+      (await (async-node-conj node cmp key))))
+
+  (async-node-disj [this cmp key root? left right]
+    (let [node (await (async-node-materialize this))]
+      (await (async-node-disj node cmp key root? left right))))
+
+  (async-node-slice-into [this cmp key-from key-to acc]
+    (let [node (await (async-node-materialize this))]
+      (await (async-node-slice-into node cmp key-from key-to acc)))))
+
+(defn ->async-node [keys pointers]
+  (AsyncNode. keys pointers))
+
+(defn ->async-leaf [keys]
+  (AsyncLeaf. keys))
+
+(defn ->async-lazy-node
+  "Create a lazy node that restores itself via IStorage when accessed."
+  [storage address lim-key len]
+  (AsyncLazyNode. storage address lim-key len nil))
+
+(deftype AsyncBTSet [root cnt comparator])
+
+(defn async-sorted-set
+  ([] (AsyncBTSet. (AsyncLeaf. (arrays/array)) 0 compare))
+  ([cmp] (AsyncBTSet. (AsyncLeaf. (arrays/array)) 0 cmp)))
+
+(defn async-from-root
+  [root cnt cmp]
+  (AsyncBTSet. root cnt cmp))
+
+(declare async-conj)
+
+(defn ^:async async-from-sequential
+  ([keys]
+   (await (async-from-sequential compare keys)))
+  ([cmp keys]
+   (loop [set (async-sorted-set cmp)
+          xs (seq keys)]
+     (if xs
+       (recur (await (async-conj set (first xs) cmp)) (next xs))
+       set))))
+
+(defn ^:async async-conj
+  "Async analogue of conj for AsyncBTSet."
+  ([^AsyncBTSet set key]
+   (await (async-conj set key (.-comparator set))))
+  ([^AsyncBTSet set key cmp]
+   (let [roots (await (async-node-conj (.-root set) cmp key))]
+     (cond
+       (nil? roots)
+       set
+
+       (== (arrays/alength roots) 1)
+       (AsyncBTSet. (arrays/aget roots 0) (inc (.-cnt set)) (.-comparator set))
+
+       :else
+       (AsyncBTSet. (AsyncNode. (arrays/amap node-lim-key roots) roots)
+                    (inc (.-cnt set))
+                    (.-comparator set))))))
+
+(defn ^:async async-disj
+  "Async analogue of disj for AsyncBTSet."
+  ([^AsyncBTSet set key]
+   (await (async-disj set key (.-comparator set))))
+  ([^AsyncBTSet set key cmp]
+   (let [new-roots (await (async-node-disj (.-root set) cmp key true nil nil))]
+     (if (nil? new-roots)
+       set
+       (let [new-root (arrays/aget new-roots 0)]
+         (if (and (instance? AsyncNode new-root)
+                  (== 1 (arrays/alength (.-pointers ^AsyncNode new-root))))
+           (AsyncBTSet. (arrays/aget (.-pointers ^AsyncNode new-root) 0)
+                        (dec (.-cnt set))
+                        (.-comparator set))
+           (AsyncBTSet. new-root
+                        (dec (.-cnt set))
+                        (.-comparator set))))))))
+
+(defn ^:async async-slice
+  "Async analogue of slice for AsyncBTSet.
+   Returns a vector of keys in [key-from, key-to]."
+  ([^AsyncBTSet set key-from key-to]
+   (await (async-slice set key-from key-to (.-comparator set))))
+  ([^AsyncBTSet set key-from key-to cmp]
+   (if (<= (.-cnt set) 0)
+     []
+     (let [acc (await (async-node-slice-into (.-root set) cmp key-from key-to (transient [])))]
+       (persistent! acc)))))

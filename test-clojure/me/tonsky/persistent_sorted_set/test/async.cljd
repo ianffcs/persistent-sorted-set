@@ -1,0 +1,95 @@
+(ns me.tonsky.persistent-sorted-set.test.async
+  (:require
+    [clojure.test :refer [deftest is testing]]
+    [me.tonsky.persistent-sorted-set.async :as async]
+    [me.tonsky.persistent-sorted-set.arrays :as arrays]))
+
+(defn ^:async async-disj-many [set xs]
+  (loop [set set
+         xs (seq xs)]
+    (if xs
+      (recur (await (async/async-disj set (first xs))) (next xs))
+      set)))
+
+(deftest async-conj-disj-slice
+  (testing "basic async set operations"
+    (let [s0 (async/async-sorted-set)
+          s1 (await (async/async-conj s0 3))
+          s2 (await (async/async-conj s1 1))
+          s3 (await (async/async-conj s2 2))
+          s4 (await (async/async-conj s3 2))
+          s5 (await (async/async-disj s4 2))
+          s6 (await (async/async-disj s5 999))]
+      (is (= [1 2 3] (await (async/async-slice s3 nil nil))))
+      (is (= [2 3] (await (async/async-slice s3 2 3))))
+      (is (= [1 2] (await (async/async-slice s3 1 2))))
+      (is (= [1 2 3] (await (async/async-slice s4 nil nil))))
+      (is (= [1 3] (await (async/async-slice s5 nil nil))))
+      (is (= [1 3] (await (async/async-slice s6 nil nil)))))))
+
+(deftype RecordingStorage [restored]
+  async/IStorage
+  (restore-node [_ address]
+    (future
+      (swap! restored conj address)
+      (case address
+        :root (async/->async-leaf (arrays/array 10 20 30))
+        nil))))
+
+(deftest async-lazy-node-materialization
+  (testing "AsyncLazyNode restores once and then uses cached node"
+    (let [restored (atom [])
+          storage (RecordingStorage. restored)
+          root (async/->async-lazy-node storage :root 30 3)
+          set (async/async-from-root root 3 compare)]
+      (is (= [10 20 30] (await (async/async-slice set nil nil))))
+      (is (= [20 30] (await (async/async-slice set 20 30))))
+      (is (= [:root] @restored)))))
+
+(deftest async-count-semantics
+  (testing "duplicate conj and missing disj keep count stable"
+    (let [s0 (async/async-sorted-set)
+          ^async/AsyncBTSet s1 (await (async/async-conj s0 42))
+          ^async/AsyncBTSet s2 (await (async/async-conj s1 42))
+          ^async/AsyncBTSet s3 (await (async/async-disj s2 999))]
+      (is (= 1 (.-cnt s1)))
+      (is (= 1 (.-cnt s2)))
+      (is (= 1 (.-cnt s3)))
+      (is (= [42] (await (async/async-slice s3 nil nil)))))))
+
+(deftest async-large-conj-disj
+  (testing "larger inserts/removes keep order and expected membership"
+    (let [^async/AsyncBTSet s (await (async/async-from-sequential compare (range 200)))
+          ^async/AsyncBTSet s' (await (async-disj-many s (range 50 150)))]
+      (is (= 200 (.-cnt s)))
+      (is (= 100 (.-cnt s')))
+      (is (= (vec (concat (range 0 50) (range 150 200)))
+             (await (async/async-slice s' nil nil))))
+      (is (= (vec (range 150 161))
+             (await (async/async-slice s' 150 160)))))))
+
+(deftest async-lazy-node-selective-materialization
+  (testing "only needed lazy branches are restored and each only once"
+    (let [restored (atom [])
+          storage-ref (atom nil)
+          storage (reify async/IStorage
+                    (restore-node [_ address]
+                      (future
+                        (swap! restored conj address)
+                        (case address
+                          :root (async/->async-node
+                                  (arrays/array 30 60)
+                                  (arrays/array
+                                    (async/->async-lazy-node @storage-ref :left 30 3)
+                                    (async/->async-lazy-node @storage-ref :right 60 3)))
+                          :left (async/->async-leaf (arrays/array 10 20 30))
+                          :right (async/->async-leaf (arrays/array 40 50 60))
+                          nil))))
+          _ (reset! storage-ref storage)
+          set (async/async-from-root (async/->async-lazy-node storage :root 60 2) 6 compare)]
+      (is (= [20] (await (async/async-slice set 15 25))))
+      (is (= [:root :left] @restored))
+      (is (= [50] (await (async/async-slice set 45 55))))
+      (is (= [:root :left :right] @restored))
+      (is (= [10 20 30] (await (async/async-slice set 10 30))))
+      (is (= [:root :left :right] @restored)))))

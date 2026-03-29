@@ -149,7 +149,7 @@
 
 
 (defn asort [arr cmp]
-  #?(:cljd (doto arr (.sort (fn ^int [a b] (cmp a b))))
+  #?(:cljd (doto ^#/(List dynamic) arr (.sort (fn ^int [a b] (cmp a b))))
      :cljs (.sort arr cmp)
      :clj  (doto arr (Arrays/parallelSort cmp))))
 
