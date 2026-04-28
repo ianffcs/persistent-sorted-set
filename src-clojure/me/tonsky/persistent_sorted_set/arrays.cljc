@@ -13,7 +13,7 @@
 
 
 #?(:cljd
-   (defn make-array [size]
+   (defn ^List make-array [size]
      ;; TODO: fixed length or not?
      (.filled #/(List dynamic) size nil))
    :cljs
@@ -24,7 +24,7 @@
 
 
 #?(:cljd
-   (defn into-array [aseq]
+   (defn ^List into-array [aseq]
      (let [arr (.empty #/(List dynamic) .growable true)]
        (doseq [x aseq]
          (.add arr x))
@@ -38,7 +38,8 @@
 
 
 #?(:cljd
-   (def aget cljd.core/aget)
+   (defmacro aget [arr i]
+     `(. ~arr "[]" ~i))
    :clj
    (defmacro aget [arr i]
      (if-cljs &env
@@ -47,7 +48,8 @@
 
 
 #?(:cljd
-   (def alength cljd.core/alength)
+   (defmacro alength [arr]
+     `(.-length ~arr))
    :clj
    (defmacro alength [arr]
      (if-cljs &env
@@ -57,7 +59,8 @@
 
 
 #?(:cljd
-   (def aset cljd.core/aset)
+   (defmacro aset [arr i v]
+     `(. ~arr "[]=" ~i ~v))
    :clj
    (defmacro aset [arr i v]
      (if-cljs &env
@@ -149,7 +152,7 @@
 
 
 (defn asort [arr cmp]
-  #?(:cljd (doto arr (.sort (fn ^int [a b] (cmp a b))))
+  #?(:cljd (let [^List arr arr] (doto arr (.sort (fn ^int [a b] (cmp a b)))))
      :cljs (.sort arr cmp)
      :clj  (doto arr (Arrays/parallelSort cmp))))
 
@@ -213,3 +216,4 @@
     (memoize
       (fn [type]
         (.getClass ^Object (java.lang.reflect.Array/newInstance ^Class type 0))))))
+

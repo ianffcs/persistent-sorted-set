@@ -5,7 +5,8 @@
   (:refer-clojure :exclude [iter conj disj sorted-set sorted-set-by])
   (:require
     ["dart:math" :as dart:math]
-    [me.tonsky.persistent-sorted-set.arrays :as arrays]))
+    [me.tonsky.persistent-sorted-set.arrays :as arrays]
+    [me.tonsky.persistent-sorted-set.comparator :as comparator]))
 
 ; B+ tree
 ; -------
@@ -60,10 +61,11 @@
 (def bit-mask
   (- max-len 1))                                            ;; 0b011111 = 5 bit
 
-(def factors
+(def ^List factors
   (arrays/into-array (map #(dart:math/pow 2 %) (range 0 52 bits-per-level))))
 
 (def empty-path 0)
+
 
 (defn- path-get ^int [^int path ^int level]
   (if (< level max-safe-level)
@@ -124,7 +126,7 @@
       (recur (cljd.core/conj res (mod path max-len)) (.floor (/ path max-len)))
       (vec res))))
 
-(defn- binary-search-l [cmp ^List arr r k]
+(defn- binary-search-l [^comparator/FnComparator cmp ^List arr r k]
   (loop [l 0
          r (int r)]
     (if (<= l r)
@@ -135,7 +137,7 @@
           (recur l (dec m))))
       l)))
 
-(defn- binary-search-r [cmp ^List arr r k]
+(defn- binary-search-r [^comparator/FnComparator cmp ^List arr r k]
   (loop [l 0
          r (int r)]
     (if (<= l r)
@@ -146,7 +148,7 @@
           (recur (inc m) r)))
       l)))
 
-(defn- lookup-exact [cmp arr key]
+(defn- lookup-exact [^comparator/FnComparator cmp ^List arr key]
   (let [arr-l (arrays/alength arr)
         idx (binary-search-l cmp arr (dec arr-l) key)]
     (if (and (< idx arr-l)
@@ -154,7 +156,7 @@
       idx
       -1)))
 
-(defn- lookup-range [cmp arr key]
+(defn- lookup-range [^comparator/FnComparator cmp ^List arr key]
   (let [arr-l (arrays/alength arr)
         idx (binary-search-l cmp arr (dec arr-l) key)]
     (if (== idx arr-l)
@@ -163,7 +165,7 @@
 
 ;; Array operations
 
-(defn- cut-n-splice [arr cut-from cut-to splice-from splice-to xs]
+(defn- ^List cut-n-splice [^List arr ^int cut-from ^int cut-to ^int splice-from ^int splice-to ^List xs]
   (let [xs-l (arrays/alength xs)
         l1 (- splice-from cut-from)
         l2 (- cut-to splice-to)
@@ -174,13 +176,13 @@
     (arrays/acopy arr splice-to cut-to new-arr l1xs)
     new-arr))
 
-(defn- splice [arr splice-from splice-to xs]
+(defn- ^List splice [^List arr ^int splice-from ^int splice-to ^List xs]
   (cut-n-splice arr 0 (arrays/alength arr) splice-from splice-to xs))
 
-(defn- insert [arr idx xs]
+(defn- ^List insert [^List arr ^int idx ^List xs]
   (cut-n-splice arr 0 (arrays/alength arr) idx idx xs))
 
-(defn- merge-n-split [a1 a2]
+(defn- ^List merge-n-split [^List a1 ^List a2]
   (let [a1-l (arrays/alength a1)
         a2-l (arrays/alength a2)
         total-l (+ a1-l a2-l)
@@ -199,7 +201,7 @@
         (arrays/acopy a2 0 a2-l r2 (- a1-l r1-l))))
     (arrays/array r1 r2)))
 
-(defn- ^bool eq-arr [cmp a1 a1-from a1-to a2 a2-from a2-to]
+(defn- ^bool eq-arr [^comparator/FnComparator cmp ^List a1 ^int a1-from ^int a1-to ^List a2 ^int a2-from ^int a2-to]
   (let [len (- a1-to a1-from)]
     (and
       (== len (- a2-to a2-from))
@@ -216,7 +218,7 @@
           :else
           (recur (inc i)))))))
 
-(defn- check-n-splice [cmp arr from to new-arr]
+(defn- check-n-splice [^comparator/FnComparator cmp ^List arr ^int from ^int to ^List new-arr]
   (if (eq-arr cmp arr from to new-arr 0 (arrays/alength new-arr))
     arr
     (splice arr from to new-arr)))
@@ -286,7 +288,7 @@
     (let [nodes (node-merge-n-split node right)]
       (return-array left (arrays/aget nodes 0) (arrays/aget nodes 1)))))
 
-(deftype Node [keys pointers]
+(deftype Node [^List keys ^List pointers]
   INode
   (node-lim-key [_]
     (arrays/alast keys))
@@ -304,12 +306,12 @@
       (return-array (Node. (arrays/aget ks 0) (arrays/aget ps 0))
                     (Node. (arrays/aget ks 1) (arrays/aget ps 1)))))
 
-  (node-lookup [_ cmp key]
+  (node-lookup [_ ^comparator/FnComparator cmp key]
     (let [idx (lookup-range cmp keys key)]
       (when-not (== -1 idx)
         (node-lookup (arrays/aget pointers idx) cmp key))))
 
-  (node-conj [_ cmp key]
+  (node-conj [_ ^comparator/FnComparator cmp key]
     (let [idx (binary-search-l cmp keys (- (arrays/alength keys) 2) key)
           nodes (node-conj (arrays/aget pointers idx) cmp key)]
       (when nodes
@@ -326,7 +328,7 @@
                 (Node. (.sublist new-keys middle)
                        (.sublist new-pointers middle)))))))))
 
-  (node-disj [_ cmp key root? left right]
+  (node-disj [_ ^comparator/FnComparator cmp key root? left right]
     (let [idx (lookup-range cmp keys key)]
       (when-not (== -1 idx)                                 ;; short-circuit, key not here
         (let [child (arrays/aget pointers idx)
@@ -342,7 +344,7 @@
                   new-pointers (splice pointers left-idx right-idx disjned)]
               (rotate (Node. new-keys new-pointers) root? left right))))))))
 
-(deftype Leaf [keys]
+(deftype Leaf [^List keys]
   INode
   (node-lim-key [_]
     (arrays/alast keys))
@@ -360,12 +362,12 @@
       (return-array (Leaf. (arrays/aget ks 0))
                     (Leaf. (arrays/aget ks 1)))))
 
-  (node-lookup [_ cmp key]
+  (node-lookup [_ ^comparator/FnComparator cmp key]
     (let [idx (lookup-exact cmp keys key)]
       (when-not (== -1 idx)
         (arrays/aget keys idx))))
 
-  (node-conj [_ cmp key]
+  (node-conj [_ ^comparator/FnComparator cmp key]
     (let [idx (binary-search-l cmp keys (dec (arrays/alength keys)) key)
           keys-l (arrays/alength keys)]
       (cond
@@ -391,7 +393,7 @@
         :else
         (arrays/array (Leaf. (splice keys idx idx (arrays/array key)))))))
 
-  (node-disj [_ cmp key root? left right]
+  (node-disj [_ ^comparator/FnComparator cmp key root? left right]
     (let [idx (lookup-exact cmp keys key)]
       (when-not (== -1 idx)                                 ;; key is here
         (let [new-keys (splice keys idx (inc idx) (arrays/array))]
@@ -403,7 +405,7 @@
 
 (def ^:private uninitialized-hash nil)
 
-(deftype BTSet [root ^int shift ^int cnt comparator meta ^:mutable _hash]
+(deftype BTSet [root ^int shift ^int cnt ^comparator/FnComparator comparator meta ^:mutable _hash]
   ;; TODO: ^:mixin c/ToStringMixin ? see entity in datascript
   ;; Object
   ;; (toString [this] (pr-str* this))
@@ -492,7 +494,7 @@
   ;;   (pr-sequential-writer writer pr-writer "#{" " " "}" opts (seq this)))
   )
 
-(defn- keys-for [^BTSet set ^int path]
+(defn- ^List keys-for [^BTSet set ^int path]
   (loop [level (int (.-shift set))
          node (.-root set)]
     (if (pos? level)
@@ -671,7 +673,7 @@
 
 (declare -seek* -rseek*)
 
-(deftype Iter [^BTSet set ^int left ^int right keys ^int idx]
+(deftype Iter [^BTSet set ^int left ^int right ^List keys ^int idx]
   IIter
   (-copy [_ l r]
     (Iter. set l r (keys-for set l) (path-get l 0)))
@@ -731,7 +733,7 @@
 
   (-reduce [this f start]
     (loop [left (int left)
-           keys keys
+           ^List keys keys
            idx (int idx)
            acc start]
       (if (nil? keys)
@@ -762,7 +764,7 @@
   (-seek [this key]
     (-seek this key (.-comparator set)))
 
-  (-seek [this key cmp]
+  (-seek [this key ^comparator/FnComparator cmp]
     (cond
       (nil? key)
       (throw (ex-info "seek can't be called with a nil key!" {}))
@@ -791,7 +793,7 @@
 
 ;; reverse iteration
 
-(deftype ReverseIter [^BTSet set ^int left ^int right keys ^int idx]
+(deftype ReverseIter [^BTSet set ^int left ^int right ^List keys ^int idx]
   IIter
   (-copy [_ l r]
     (ReverseIter. set l r (keys-for set r) (path-get r 0)))
@@ -831,7 +833,7 @@
   (-seek [this key]
     (-seek this key (.-comparator set)))
 
-  (-seek [this key cmp]
+  (-seek [this key ^comparator/FnComparator cmp]
     (cond
       (nil? key)
       (throw (ex-info "seek can't be called with a nil key!" {}))
@@ -893,7 +895,7 @@
     :else
     (-distance (.-root set) path-l path-r (.-shift set))))
 
-(defn est-count [iter]
+(defn est-count [^Iter iter]
   (distance (.-set iter) (.-left iter) (.-right iter)))
 
 
@@ -902,7 +904,7 @@
 (defn- -seek*
   "Returns path to first element >= key,
    or -1 if all elements in a set < key"
-  [^BTSet set key comparator]
+  [^BTSet set key ^comparator/FnComparator comparator]
   (if (nil? key)
     empty-path
     (loop [node (.-root set)
@@ -928,7 +930,7 @@
   "Returns path to the first element that is > key.
    If all elements in a set are <= key, returns `(-rpath set) + 1`.
    It’s a virtual path that is bigger than any path in a tree"
-  [^BTSet set key comparator]
+  [^BTSet set key ^comparator/FnComparator comparator]
   (if (nil? key)
     (path-inc (-rpath (.-root set) empty-path (.-shift set)))
     (loop [node (.-root set)
@@ -950,13 +952,13 @@
               res
               (dec level))))))))
 
-(defn- -slice [^BTSet set key-from key-to comparator]
+(defn- -slice [^BTSet set key-from key-to ^comparator/FnComparator comparator]
   (when-some [path (-seek* set key-from comparator)]
     (let [till-path (-rseek* set key-to comparator)]
       (when (path-lt path till-path)
         (Iter. set path till-path (keys-for set path) (path-get path 0))))))
 
-(defn- arr-map-inplace [f arr]
+(defn- ^List arr-map-inplace [f ^List arr]
   (let [len (arrays/alength arr)]
     (loop [i 0]
       (when (< i len)
@@ -968,7 +970,7 @@
 (defn- arr-partition-approx
   "Splits `arr` into arrays of size between min-len and max-len,
    trying to stick to (min+max)/2"
-  [min-len max-len arr]
+  [min-len max-len ^List arr]
   (let [chunk-len avg-len
         len (arrays/alength arr)
         acc (transient [])]
@@ -989,7 +991,7 @@
     (to-array (persistent! acc))))
 
 
-(defn- sorted-arr-distinct? [arr cmp]
+(defn- sorted-arr-distinct? [arr ^comparator/FnComparator cmp]
   (let [al (arrays/alength arr)]
     (if (<= al 1)
       true
@@ -1006,7 +1008,7 @@
 (defn- sorted-arr-distinct
   "Filter out repetitive values in a sorted array.
    Optimized for no-duplicates case"
-  [arr cmp]
+  [arr ^comparator/FnComparator cmp]
   (if (sorted-arr-distinct? arr cmp)
     arr
     (let [al (arrays/alength arr)]
@@ -1026,7 +1028,8 @@
 (defn conj
   "Analogue to [[clojure.core/conj]] with comparator that overrides the one stored in set."
   [^BTSet set key cmp]
-  (let [roots (node-conj (.-root set) cmp key)]
+  (let [^comparator/FnComparator cmp cmp
+        roots (node-conj (.-root set) cmp key)]
     (cond
       ;; tree not changed
       (nil? roots)
@@ -1050,7 +1053,8 @@
 (defn disj
   "Analogue to [[clojure.core/disj]] with comparator that overrides the one stored in set."
   [^BTSet set key cmp]
-  (let [new-roots (node-disj (.-root set) cmp key true nil nil)]
+  (let [^comparator/FnComparator cmp cmp
+        new-roots (node-disj (.-root set) cmp key true nil nil)]
     (if (nil? new-roots)                                    ;; nothing changed, key wasn't in the set
       set
       (let [new-root (arrays/aget new-roots 0)]
@@ -1109,7 +1113,8 @@
   ([cmp arr _len]
    (from-sorted-array cmp arr _len {}))
   ([cmp arr _len _opts]
-   (let [leaves (->> arr
+   (let [^comparator/FnComparator cmp (comparator/as-cmp cmp)
+         leaves (->> arr
                      (arr-partition-approx min-len max-len)
                      (arr-map-inplace #(Leaf. %)))]
      (loop [current-level leaves
@@ -1127,18 +1132,19 @@
 (defn from-sequential
   "Create a set with custom comparator and a collection of keys. Useful when you don’t want to call [[clojure.core/apply]] on [[sorted-set-by]]."
   [cmp seq]
-  (let [arr (-> (into-array seq) (arrays/asort cmp) (sorted-arr-distinct cmp))]
+  (let [^comparator/FnComparator cmp (comparator/as-cmp cmp)
+        arr (-> (into-array seq) (arrays/asort (fn ^int [a b] (cmp a b))) (sorted-arr-distinct cmp))]
     (from-sorted-array cmp arr)))
 
 
 (defn sorted-set*
   "Create a set with custom comparator, metadata and settings"
   [opts]
-  (BTSet. (Leaf. (arrays/array)) 0 0 (or (:cmp opts) compare) (:meta opts) uninitialized-hash))
+  (BTSet. (Leaf. (arrays/array)) 0 0 (comparator/as-cmp (or (:cmp opts) compare)) (:meta opts) uninitialized-hash))
 
 
 (defn sorted-set-by
-  ([cmp] (BTSet. (Leaf. (arrays/array)) 0 0 cmp nil uninitialized-hash))
+  ([cmp] (BTSet. (Leaf. (arrays/array)) 0 0 (comparator/as-cmp cmp) nil uninitialized-hash))
   ([cmp & keys] (from-sequential cmp keys)))
 
 
@@ -1149,3 +1155,5 @@
 (defn settings [set]
   {:branching-factor max-len
    :ref-type         :strong})
+
+(def as-cmp comparator/as-cmp)

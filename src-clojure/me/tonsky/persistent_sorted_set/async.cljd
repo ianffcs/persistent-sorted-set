@@ -1,11 +1,15 @@
 (ns me.tonsky.persistent-sorted-set.async
   (:require
-    [me.tonsky.persistent-sorted-set.arrays :as arrays]))
+    [me.tonsky.persistent-sorted-set.arrays :as arrays]
+    [me.tonsky.persistent-sorted-set.comparator :as comparator]
+    [me.tonsky.persistent-sorted-set :as pss]))
+
+(def ^:private as-cmp comparator/as-cmp)
 
 (def max-len 32)
 (def min-len 16)
 
-(defn- binary-search-l [cmp arr r k]
+(defn- binary-search-l [^comparator/FnComparator cmp arr r k]
   (loop [l 0
          r (int r)]
     (if (<= l r)
@@ -16,15 +20,15 @@
           (recur l (dec m))))
       l)))
 
-(defn- lookup-exact [cmp arr key]
+(defn- lookup-exact [^comparator/FnComparator cmp arr key]
   (let [arr-l (arrays/alength arr)
         idx (binary-search-l cmp arr (dec arr-l) key)]
     (if (and (< idx arr-l)
-             (== 0 (cmp (arrays/aget arr idx) key)))
+             (== 0 (cmp(arrays/aget arr idx) key)))
       idx
       -1)))
 
-(defn- lookup-range [cmp arr key]
+(defn- lookup-range [^comparator/FnComparator cmp arr key]
   (let [arr-l (arrays/alength arr)
         idx (binary-search-l cmp arr (dec arr-l) key)]
     (if (== idx arr-l)
@@ -64,7 +68,7 @@
         (arrays/acopy a2 0 a2-l r2 (- a1-l r1-l))))
     (arrays/array r1 r2)))
 
-(defn- ^bool eq-arr [cmp a1 a1-from a1-to a2 a2-from a2-to]
+(defn- ^bool eq-arr [^comparator/FnComparator cmp a1 a1-from a1-to a2 a2-from a2-to]
   (let [len (- a1-to a1-from)]
     (and
       (== len (- a2-to a2-from))
@@ -81,7 +85,7 @@
           :else
           (recur (inc i)))))))
 
-(defn- check-n-splice [cmp arr from to new-arr]
+(defn- check-n-splice [^comparator/FnComparator cmp arr from to new-arr]
   (if (eq-arr cmp arr from to new-arr 0 (arrays/alength new-arr))
     arr
     (splice arr from to new-arr)))
@@ -180,12 +184,12 @@
       (return-array (AsyncNode. (arrays/aget ks 0) (arrays/aget ps 0))
                     (AsyncNode. (arrays/aget ks 1) (arrays/aget ps 1)))))
 
-  (async-node-lookup [_ cmp key]
+  (async-node-lookup [_ ^comparator/FnComparator cmp key]
     (let [idx (lookup-range cmp keys key)]
       (when-not (== -1 idx)
         (await (async-node-lookup (arrays/aget pointers idx) cmp key)))))
 
-  (async-node-conj [_ cmp key]
+  (async-node-conj [_ ^comparator/FnComparator cmp key]
     (let [idx (binary-search-l cmp keys (- (arrays/alength keys) 2) key)
           nodes (await (async-node-conj (arrays/aget pointers idx) cmp key))]
       (when nodes
@@ -202,7 +206,7 @@
                 (AsyncNode. (.sublist new-keys middle)
                             (.sublist new-pointers middle)))))))))
 
-  (async-node-disj [_ cmp key root? left right]
+  (async-node-disj [_ ^comparator/FnComparator cmp key root? left right]
     (let [idx (lookup-range cmp keys key)]
       (when-not (== -1 idx)
         (let [child (arrays/aget pointers idx)
@@ -218,7 +222,7 @@
                   new-pointers (splice pointers left-idx right-idx disjned)]
               (await (rotate (AsyncNode. new-keys new-pointers) root? left right))))))))
 
-  (async-node-slice-into [_ cmp key-from key-to acc]
+  (async-node-slice-into [_ ^comparator/FnComparator cmp key-from key-to acc]
     (let [pointers-l (arrays/alength pointers)]
       (loop [i 0
              acc acc]
@@ -251,12 +255,12 @@
       (return-array (AsyncLeaf. (arrays/aget ks 0))
                     (AsyncLeaf. (arrays/aget ks 1)))))
 
-  (async-node-lookup [_ cmp key]
+  (async-node-lookup [_ ^comparator/FnComparator cmp key]
     (let [idx (lookup-exact cmp keys key)]
       (when-not (== -1 idx)
         (arrays/aget keys idx))))
 
-  (async-node-conj [_ cmp key]
+  (async-node-conj [_ ^comparator/FnComparator cmp key]
     (let [idx (binary-search-l cmp keys (dec (arrays/alength keys)) key)
           keys-l (arrays/alength keys)]
       (cond
@@ -277,13 +281,13 @@
         :else
         (arrays/array (AsyncLeaf. (splice keys idx idx (arrays/array key)))))))
 
-  (async-node-disj [_ cmp key root? left right]
+  (async-node-disj [_ ^comparator/FnComparator cmp key root? left right]
     (let [idx (lookup-exact cmp keys key)]
       (when-not (== -1 idx)
         (let [new-keys (splice keys idx (inc idx) (arrays/array))]
           (await (rotate (AsyncLeaf. new-keys) root? left right))))))
 
-  (async-node-slice-into [_ cmp key-from key-to acc]
+  (async-node-slice-into [_ ^comparator/FnComparator cmp key-from key-to acc]
     (let [keys-l (arrays/alength keys)]
       (loop [i 0
              acc acc]
@@ -354,15 +358,15 @@
   [storage address lim-key len]
   (AsyncLazyNode. storage address lim-key len nil))
 
-(deftype AsyncBTSet [root cnt comparator])
+(deftype AsyncBTSet [root cnt ^comparator/FnComparator comparator])
 
 (defn async-sorted-set
-  ([] (AsyncBTSet. (AsyncLeaf. (arrays/array)) 0 compare))
-  ([cmp] (AsyncBTSet. (AsyncLeaf. (arrays/array)) 0 cmp)))
+  ([] (AsyncBTSet. (AsyncLeaf. (arrays/array)) 0 (as-cmp compare)))
+  ([cmp] (AsyncBTSet. (AsyncLeaf. (arrays/array)) 0 (as-cmp cmp))))
 
 (defn async-from-root
   [root cnt cmp]
-  (AsyncBTSet. root cnt cmp))
+  (AsyncBTSet. root cnt (as-cmp cmp)))
 
 (declare async-conj)
 
@@ -370,17 +374,18 @@
   ([keys]
    (await (async-from-sequential compare keys)))
   ([cmp keys]
-   (loop [set (async-sorted-set cmp)
-          xs (seq keys)]
-     (if xs
-       (recur (await (async-conj set (first xs) cmp)) (next xs))
-       set))))
+   (let [^comparator/FnComparator cmp (as-cmp cmp)]
+     (loop [set (async-sorted-set cmp)
+            xs (seq keys)]
+       (if xs
+         (recur (await (async-conj set (first xs) cmp)) (next xs))
+         set)))))
 
 (defn ^:async async-conj
   "Async analogue of conj for AsyncBTSet."
   ([^AsyncBTSet set key]
    (await (async-conj set key (.-comparator set))))
-  ([^AsyncBTSet set key cmp]
+  ([^AsyncBTSet set key ^comparator/FnComparator cmp]
    (let [roots (await (async-node-conj (.-root set) cmp key))]
      (cond
        (nil? roots)
@@ -398,7 +403,7 @@
   "Async analogue of disj for AsyncBTSet."
   ([^AsyncBTSet set key]
    (await (async-disj set key (.-comparator set))))
-  ([^AsyncBTSet set key cmp]
+  ([^AsyncBTSet set key ^comparator/FnComparator cmp]
    (let [new-roots (await (async-node-disj (.-root set) cmp key true nil nil))]
      (if (nil? new-roots)
        set
@@ -417,7 +422,7 @@
    Returns a vector of keys in [key-from, key-to]."
   ([^AsyncBTSet set key-from key-to]
    (await (async-slice set key-from key-to (.-comparator set))))
-  ([^AsyncBTSet set key-from key-to cmp]
+  ([^AsyncBTSet set key-from key-to ^comparator/FnComparator cmp]
    (if (<= (.-cnt set) 0)
      []
      (let [acc (await (async-node-slice-into (.-root set) cmp key-from key-to (transient [])))]

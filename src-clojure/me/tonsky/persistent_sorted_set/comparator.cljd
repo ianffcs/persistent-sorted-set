@@ -1,0 +1,10 @@
+(ns me.tonsky.persistent-sorted-set.comparator)
+
+(deftype FnComparator [f]
+  cljd.core/IFn
+  (-invoke [_ a b] (int (f a b))))
+
+(defn as-cmp [cmp]
+  (if (instance? FnComparator cmp)
+    cmp
+    (FnComparator. cmp)))
