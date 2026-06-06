@@ -223,7 +223,7 @@
     arr
     (splice arr from to new-arr)))
 
-(defn- return-array
+(defn- ^List return-array
   "Drop non-nil references and return array of arguments"
   ([a1]
    (arrays/array a1))
@@ -280,12 +280,12 @@
     ;; left has fewer nodes, redestribute with it
     (and left (or (nil? right)
                   (< (node-len left) (node-len right))))
-    (let [nodes (node-merge-n-split left node)]
+    (let [^List nodes (node-merge-n-split left node)]
       (return-array (arrays/aget nodes 0) (arrays/aget nodes 1) right))
 
     ;; right has fewer nodes, redestribute with it
     :else
-    (let [nodes (node-merge-n-split node right)]
+    (let [^List nodes (node-merge-n-split node right)]
       (return-array left (arrays/aget nodes 0) (arrays/aget nodes 1)))))
 
 (deftype Node [^List keys ^List pointers]
@@ -315,8 +315,9 @@
     (let [idx (binary-search-l cmp keys (- (arrays/alength keys) 2) key)
           nodes (node-conj (arrays/aget pointers idx) cmp key)]
       (when nodes
-        (let [new-keys (check-n-splice cmp keys idx (inc idx) (arrays/amap node-lim-key nodes))
-              new-pointers (splice pointers idx (inc idx) nodes)]
+        (let [^List nodes nodes
+              ^List new-keys (check-n-splice cmp keys idx (inc idx) (arrays/amap node-lim-key nodes))
+              ^List new-pointers (splice pointers idx (inc idx) nodes)]
           (if (<= (arrays/alength new-pointers) max-len)
             ;; ok as is
             (arrays/array (Node. new-keys new-pointers))
@@ -970,7 +971,7 @@
 (defn- arr-partition-approx
   "Splits `arr` into arrays of size between min-len and max-len,
    trying to stick to (min+max)/2"
-  [min-len max-len ^List arr]
+  [^int min-len ^int max-len ^List arr]
   (let [chunk-len avg-len
         len (arrays/alength arr)
         acc (transient [])]
@@ -991,7 +992,7 @@
     (to-array (persistent! acc))))
 
 
-(defn- sorted-arr-distinct? [arr ^comparator/FnComparator cmp]
+(defn- sorted-arr-distinct? [^List arr ^comparator/FnComparator cmp]
   (let [al (arrays/alength arr)]
     (if (<= al 1)
       true
@@ -1008,7 +1009,7 @@
 (defn- sorted-arr-distinct
   "Filter out repetitive values in a sorted array.
    Optimized for no-duplicates case"
-  [arr ^comparator/FnComparator cmp]
+  [^List arr ^comparator/FnComparator cmp]
   (if (sorted-arr-distinct? arr cmp)
     arr
     (let [al (arrays/alength arr)]
@@ -1028,36 +1029,35 @@
 (defn conj
   "Analogue to [[clojure.core/conj]] with comparator that overrides the one stored in set."
   [^BTSet set key cmp]
-  (let [^comparator/FnComparator cmp cmp
+  (let [^comparator/FnComparator cmp (comparator/as-cmp cmp)
         roots (node-conj (.-root set) cmp key)]
-    (cond
+    (if
       ;; tree not changed
       (nil? roots)
       set
-
-      ;; keeping single root
-      (== (arrays/alength roots) 1)
-      (alter-btset set
-                   (arrays/aget roots 0)
-                   (.-shift set)
-                   (inc (.-cnt set)))
-
-      ;; introducing new root
-      :else
-      (alter-btset set
-                   (Node. (arrays/amap node-lim-key roots) roots)
-                   (inc (.-shift set))
-                   (inc (.-cnt set))))))
+      (let [^List roots roots]
+        (if (== (arrays/alength roots) 1)
+          ;; keeping single root
+          (alter-btset set
+                       (arrays/aget roots 0)
+                       (.-shift set)
+                       (inc (.-cnt set)))
+          ;; introducing new root
+          (alter-btset set
+                       (Node. (arrays/amap node-lim-key roots) roots)
+                       (inc (.-shift set))
+                       (inc (.-cnt set))))))))
 
 
 (defn disj
   "Analogue to [[clojure.core/disj]] with comparator that overrides the one stored in set."
   [^BTSet set key cmp]
-  (let [^comparator/FnComparator cmp cmp
+  (let [^comparator/FnComparator cmp (comparator/as-cmp cmp)
         new-roots (node-disj (.-root set) cmp key true nil nil)]
     (if (nil? new-roots)                                    ;; nothing changed, key wasn't in the set
       set
-      (let [new-root (arrays/aget new-roots 0)]
+      (let [^List new-roots new-roots
+            new-root (arrays/aget new-roots 0)]
         (if (and (instance? Node new-root)
                  (== 1 (arrays/alength (.-pointers ^Node new-root))))
 
@@ -1081,7 +1081,7 @@
   ([^BTSet set key-from key-to]
    (-slice set key-from key-to (.-comparator set)))
   ([^BTSet set key-from key-to comparator]
-   (-slice set key-from key-to comparator)))
+   (-slice set key-from key-to (comparator/as-cmp comparator))))
 
 
 (defn rslice
@@ -1093,7 +1093,7 @@
   ([^BTSet set key-from key-to]
    (some-> (-slice set key-to key-from (.-comparator set)) rseq))
   ([^BTSet set key-from key-to comparator]
-   (some-> (-slice set key-to key-from comparator) rseq)))
+   (some-> (-slice set key-to key-from (comparator/as-cmp comparator)) rseq)))
 
 
 (defn seek
@@ -1108,11 +1108,11 @@
 
 (defn from-sorted-array
   "Fast path to create a set if you already have a sorted array of elements on your hands."
-  ([cmp arr]
+  ([cmp ^List arr]
    (from-sorted-array cmp arr (arrays/alength arr) {}))
-  ([cmp arr _len]
+  ([cmp ^List arr _len]
    (from-sorted-array cmp arr _len {}))
-  ([cmp arr _len _opts]
+  ([cmp ^List arr _len _opts]
    (let [^comparator/FnComparator cmp (comparator/as-cmp cmp)
          leaves (->> arr
                      (arr-partition-approx min-len max-len)

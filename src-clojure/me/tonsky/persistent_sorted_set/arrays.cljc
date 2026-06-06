@@ -126,8 +126,8 @@
 
 
 #?(:cljd
-   (defn amap
-     [f arr]
+   (defn ^List amap
+     [f ^List arr]
      ;; TODO: should I use .map and .asList ? is that better?
      (let [len (cljd.core/alength arr)
            res (cljd.core/aclone arr)]
@@ -216,4 +216,3 @@
     (memoize
       (fn [type]
         (.getClass ^Object (java.lang.reflect.Array/newInstance ^Class type 0))))))
-
